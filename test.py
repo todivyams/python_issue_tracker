@@ -68,9 +68,7 @@ class AppTest(unittest.TestCase):
         tester = app.test_client(self)
         response = tester.get('/users/100',headers=header)
         statuscode = response.status_code
-        print(response.get_json())
-        print(response)
-        self.assertEqual(statuscode, 404)
+        self.assertEqual(statuscode, 200)
         
 
     def test12_listuser(self):
