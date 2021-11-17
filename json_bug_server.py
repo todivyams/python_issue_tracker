@@ -56,8 +56,8 @@ class Bugs(db.Model):
     assignedto = db.Column(db.String(20),db.ForeignKey('users.username'),
                            nullable = True)
     assignedby = db.Column(db.Integer,nullable = True)
-    status = db.Column(db.Enum('Open','Assigned','Inprogress','resolved',
-                               'closed'),nullable = False,default='Open')
+    status = db.Column(db.Enum('Open','Assigned','Inprogress','Resolved',
+                               'Closed'),nullable = False,default='Open')
     comments = db.relationship('Comments',backref='bugcomments',lazy=True)
     
     def __repr__(self):
@@ -80,12 +80,24 @@ class Comments(db.Model):
                 self.commentedby,self.bugid, self.comment)
 
 
-if not os.path.isfile('./data.db'):
+try:
     app.logger.debug('creating the DB')
+    db.drop_all()
     db.create_all()
     db.session.commit()
-else:
-    app.logger.debug('DB already exists')
+
+    passwd = generate_password_hash("passwd1", method='sha256')
+    admin = Users(username = "admin1", email = "admin1@email.com",password = passwd, realm ="Admin")
+              
+    db.session.add(admin)
+    db.session.commit()
+except Exception as e:
+    print(e)
+    
+
+##if not os.path.isfile('./data.db'):
+##else:
+##    app.logger.debug('DB already exists')
 
 
 
@@ -128,6 +140,27 @@ def index():
     return('Welcome to BugsWorld !!')
 
 
+@app.route('/login',methods=['POST'])
+def login():
+    
+    auth = request.authorization
+    
+    if not auth or not auth.username or not auth.password:
+        return make_response({'Could not verify':'Login required'},401)
+    user = Users.query.filter_by(username = auth.username).first()
+    if user is None:
+        return make_response({'message ':' No users present'},401)
+    if check_password_hash(user.password,auth.password):
+    #if user.password == auth.password:
+        payload = {'id': user.id, 'exp': datetime.utcnow()+timedelta(hours=1)}
+        token = jwt.encode(payload,app.config['SECRET_KEY'],algorithm="HS256")
+        app.logger.debug(token, type(token))
+        app.logger.info(f'user {user.username} logged in')
+       
+        return make_response({'token':token},200)
+    return make_response({'Could not verify': 'ValidLogin required'},401)
+
+
 @app.route('/users')
 @token_authentication
 def getusers(curr_user):
@@ -151,7 +184,6 @@ def getusers(curr_user):
         dict_user['id'] = user.id
         dict_user['User Name'] = user.username
         dict_user['Email'] = user.email
-        dict_user['Password'] = user.password
         output.append(dict_user)
     return make_response(jsonify(output),200,)
 
@@ -191,9 +223,8 @@ def createuser(curr_user):
     
     user = Users()
     try:
-        #password = request.json['Password']
-        #user.password = generate_password_hash(password, method='sha256')
-        user.password = request.json['Password']
+        password = request.json['Password']
+        user.password = generate_password_hash(password, method='sha256')
         user.username = request.json['User Name']
         user.email = request.json['Email']
         user.realm = 'Level1'
@@ -214,6 +245,14 @@ def createuser(curr_user):
 @token_authentication
 def updateuser(curr_user, id):
     app.logger.debug('REST API call for updating user info')
+
+    if curr_user.realm != 'Admin':
+        return make_response({'message':'No permission for this operation'},401,)
+        
+
+    if curr_user.id == 1:
+        return make_response({'message':'Admin user realm cannot be changed'},401,)
+    
 
     try:
         user = Users.query.get(id)
@@ -237,12 +276,15 @@ def deleteuser(curr_user,id):
     
     if curr_user.realm != 'Admin':
         return {'message':'No permission for this operation'}
+
+    if id == 1:
+        return make_response({'message': 'Admin cannot be deleted '},401,)
     
     try:
         user = Users.query.get(id)
         if user is None:
             return make_response({'message ':' No users present'},404)
-            
+
         db.session.delete(user)
         db.session.commit()
     except Exception as e:
@@ -252,27 +294,6 @@ def deleteuser(curr_user,id):
     app.logger.info(f'deleted user {user.username}')
     return make_response({'message ':
                           f' deleted user {user.username} , id: {id}'},200)
-
-
-@app.route('/login',methods=['POST'])
-def login():
-    
-    auth = request.authorization
-    
-    if not auth or not auth.username or not auth.password:
-        return make_response({'Could not verify':'Login required'},401)
-    user = Users.query.filter_by(username = auth.username).first()
-    if user is None:
-        return make_response({'message ':' No users present'},401)
-    #if check_password_hash(user.password,auth.password):
-    if user.password == auth.password:
-        payload = {'id': user.id, 'exp': datetime.utcnow()+timedelta(hours=1)}
-        token = jwt.encode(payload,app.config['SECRET_KEY'],algorithm="HS256")
-        app.logger.debug(token, type(token))
-        app.logger.info(f'user {user.username} logged in')
-       
-        return make_response({'token':token},200)
-    return make_response({'Could not verify': 'ValidLogin required'},401)
 
 
 @app.route('/bugs')
