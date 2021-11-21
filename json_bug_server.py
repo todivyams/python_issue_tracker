@@ -1,6 +1,7 @@
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask import Flask, request, jsonify, make_response
 from flask_sqlalchemy import SQLAlchemy
+from flask_swagger_ui import get_swaggerui_blueprint
 from datetime import datetime, timedelta
 from functools import wraps
 import logging
@@ -33,14 +34,29 @@ fh_debug.setLevel(logging.DEBUG)
 fh_debug.propagate = False
 app.logger.addHandler(fh_debug)
 
+# Swagger specific
+SWAGGER_URL = '/swagger'
+API_URL = '/static/swagger.json'
+SWAGGERUI_BLUEPRINT = get_swaggerui_blueprint(
+    SWAGGER_URL,
+    API_URL,
+    config={
+        'app_name': "Issue Tracker"
+    }
+)
+app.register_blueprint(SWAGGERUI_BLUEPRINT, url_prefix=SWAGGER_URL)
+### end swagger specific ###
+
 class Users(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(20),unique = True, nullable = False)
     email = db.Column(db.String(100),unique = True, nullable = False)
     password = db.Column(db.String(80),nullable = False)
     realm = db.Column(db.Enum('Admin','Level2','Level1'),nullable = False)
+    
     comments = db.relationship('Comments',lazy=True)
-    bugsassigned = db.relationship('Bugs',backref='assignedbugs',lazy=True)
+    bugsassigned = db.relationship('Bugs',backref='assigneduser',lazy=True)
+    #bugsassigned = db.relationship('Bugs',lazy=True)
     
     def __repr__(self):
         return "{'id':%d,'username':%s,'email':%s}"%(self.id,self.username,
@@ -58,7 +74,8 @@ class Bugs(db.Model):
     assignedby = db.Column(db.Integer,nullable = True)
     status = db.Column(db.Enum('Open','Assigned','Inprogress','Resolved',
                                'Closed'),nullable = False,default='Open')
-    comments = db.relationship('Comments',backref='bugcomments',lazy=True)
+    comments = db.relationship('Comments',backref='commenteduser',lazy=True)
+    #comments = db.relationship('Comments',lazy=True)
     
     def __repr__(self):
         record = {'id':self.id,'title':self.title,'description':self.description,
@@ -151,7 +168,6 @@ def login():
     if user is None:
         return make_response({'message ':' No users present'},401)
     if check_password_hash(user.password,auth.password):
-    #if user.password == auth.password:
         payload = {'id': user.id, 'exp': datetime.utcnow()+timedelta(hours=1)}
         token = jwt.encode(payload,app.config['SECRET_KEY'],algorithm="HS256")
         app.logger.debug(token, type(token))
@@ -250,7 +266,7 @@ def updateuser(curr_user, id):
         return make_response({'message':'No permission for this operation'},401,)
         
 
-    if curr_user.id == 1:
+    if id == '1':
         return make_response({'message':'Admin user realm cannot be changed'},401,)
     
 
@@ -262,7 +278,7 @@ def updateuser(curr_user, id):
         db.session.commit()
     except Exception as e:
         app.logger.exception(e)
-        return make_response({'message': 'Error in creating user'},500)
+        return make_response({'message': 'Error in updating user'},500)
     
     app.logger.info(f'updated user {user.username}')
     return make_response({'message ':
@@ -277,14 +293,23 @@ def deleteuser(curr_user,id):
     if curr_user.realm != 'Admin':
         return {'message':'No permission for this operation'}
 
-    if id == 1:
+    if id == '1':
         return make_response({'message': 'Admin cannot be deleted '},401,)
     
     try:
         user = Users.query.get(id)
         if user is None:
             return make_response({'message ':' No users present'},404)
-
+        
+        print(user.bugsassigned)
+        for bug in user.bugsassigned:
+            if bug.status not in ['Closed','Resolved']:
+                bug.status = 'Open'
+                bug.assignedto = 'None'
+        
+        db.session.commit()
+        user = Users.query.get(id)
+        print(user.bugsassigned)
         db.session.delete(user)
         db.session.commit()
     except Exception as e:
@@ -307,7 +332,7 @@ def getbugs(curr_user):
         app.logger.exception(e)
         return make_response({'message ':' Error in getting data'},500)
     
-    if  bugs is None:
+    if  len(bugs) == 0:
         return make_response({'message ':f' No bugs found'},404)
     
     dict_bug_list = []
@@ -338,7 +363,7 @@ def getbug(curr_user,id):
 
     if  bug is None:
         return make_response({'message ':f' No bug with id {id}'},404)
-    
+    print(bug.assigneduser)
     dict_bug = {}
     dict_bug['Bug ID'] = bug.id
     dict_bug['Bug Title'] = bug.title
@@ -378,14 +403,22 @@ def createbug(curr_user):
 def assignbug(curr_user,id):
     app.logger.debug('REST API call for updating a bug.')
     
-    if curr_user.realm == 'Level2':
+    if curr_user.realm == 'Level1':
         return {'message ':' Permission denied.'}
     
     try:
         bug = Bugs.query.get(id)
         if bug is None:
             return make_response({'message ':f' No bug with id {id}'},404)
+        if bug.status == 'Assigned':
+            return make_response(
+            {'message ':f' bug {id} is already assigned to user {bug.assignedto}'},404)
         bug.assignedto = request.json['Assigned To']
+        user = Users.query.filter_by(username = bug.assignedto).first()
+        if not user:
+            return make_response({'message ':f' No such user: {bug.assignedto}'}
+                                 ,404)
+         
         bug.assignedby = curr_user.username
         bug.status = 'Assigned'
         db.session.commit()
@@ -403,7 +436,7 @@ def assignbug(curr_user,id):
 def updatebugstatus(curr_user, id):
     app.logger.debug('REST API call for updating status of a bug.')
     
-    if curr_user.realm == 'Level2' and curr_user.id != id:
+    if curr_user.realm == 'Level1' and curr_user.id != id:
         return {'message ':' Permission denied.'}
     
     try:
